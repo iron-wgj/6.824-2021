@@ -448,6 +448,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 			}
 			count += 1
 			cmd = cmd1
+			//DPrintf("test,count:%d\n",count)
 		}
 	}
 	return count, cmd
@@ -533,7 +534,9 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 					}
 				}
 				time.Sleep(20 * time.Millisecond)
+				//DPrintf("test:nd:%d,cmd:%v\n",nd,cmd1)
 			}
+
 			if retry == false {
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}

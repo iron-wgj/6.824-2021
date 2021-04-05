@@ -802,6 +802,7 @@ func TestUnreliableAgree2C(t *testing.T) {
 
 func TestFigure8Unreliable2C(t *testing.T) {
 	servers := 5
+	testTime:=time.Now()
 	cfg := make_config(t, servers, true, false)
 	defer cfg.cleanup()
 
@@ -832,18 +833,20 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
 			cfg.disconnect(leader)
+			DPrintf("%d disconnect\n",leader)
 			nup -= 1
 		}
 
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.connected[s] == false {
+				DPrintf("%d reconnect\n",s)
 				cfg.connect(s)
 				nup += 1
 			}
 		}
 	}
-
+	DPrintf("Figure 8 unr time:%v\n",time.Since(testTime).Seconds())
 	for i := 0; i < servers; i++ {
 		if cfg.connected[i] == false {
 			cfg.connect(i)
