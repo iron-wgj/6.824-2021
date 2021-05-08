@@ -533,16 +533,17 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 						return index
 					}
 				}
+				//DPrintf("one(%d) check,index(%d):nd %d,cmd1:%d\n",cmd,index,nd,cmd1)
 				time.Sleep(20 * time.Millisecond)
 				//DPrintf("test:nd:%d,cmd:%v\n",nd,cmd1)
 			}
-
 			if retry == false {
 				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 			}
 		} else {
 			time.Sleep(50 * time.Millisecond)
 		}
+
 	}
 	cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	return -1
