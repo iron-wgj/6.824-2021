@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="fb31b94e-283a-4310-8904-f5c8715ec46e" name="sphere虚拟机" url="http://192.168.1.128">
+        <fileTransfer accessType="SFTP" host="192.168.1.128" port="22" sshConfigId="86aaf377-5873-4135-b540-affe17e54e1c" sshConfig="root@192.168.1.128:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
