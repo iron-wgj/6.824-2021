@@ -22,7 +22,6 @@ import (
 	"context"
 	"log"
 	"math/rand"
-	"os/user"
 
 	//	"bytes"
 	"sync"
@@ -83,7 +82,6 @@ type Raft struct {
 	currentState  raftState
 	lastHeartbeat time.Time
 	currentLeader int //current leader id
-	electionClock int64
 
 	//2B:
 	commitIndex int
@@ -398,6 +396,8 @@ func (rf *Raft) killed() bool {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
+	sleepTime := rand.Int63()%200 + 300
+	time.Sleep(time.Millisecond * time.Duration(sleepTime)) //sleep for different time
 	for rf.killed() == false {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
@@ -406,31 +406,168 @@ func (rf *Raft) ticker() {
 		duration := time.Now().Sub(rf.lastHeartbeat)
 		curState := rf.currentState
 		rf.mu.Unlock()
-
-		//follower action: check if election clock time out
-		//term increse,state become to candiate and vote for self
-		if curState == Follower{
-			if int64(duration.Milliseconds()) >= rf.electionClock {
-				rf.mu.Lock()
-				rf.currentState = Candidate
-				rf.mu.Unlock()
-				CandidateVote(rf)
-			}else{
-				time.Sleep(time.Millisecond * time.Duration(100))
-			}
-		}
-
-		//candidate action: start the vote request and check, stop when timeout
-		if curState==Candidate {
+		if curState == Follower && int64(duration.Milliseconds()) >= sleepTime {
+			//prepare for request vote from other peers,
+			//term increse,state become to candiate and vote for self
 			//DPrintf("%d start the vote,duration:%d,sleeptime:%d\n",rf.me,int64(duration.Milliseconds()),sleepTime)
-			//start the goroutine which start the vote
-			CandidateVote(rf)
+			rf.mu.Lock()
+			rf.currentTerm++
+			rf.currentState = Candidate
+			rf.votedFor = rf.me
+			rf.lastHeartbeat = time.Now()
+			rf.persist()
+			rf.mu.Unlock()
+			ctx, cancelFunc := context.WithCancel(context.Background())
+
+			go func(ctx context.Context) {
+				stop := false
+				voteLock := sync.Mutex{}
+				cond := sync.NewCond(&voteLock)
+				voteNum := 1
+				grantNum := 1
+				ch := make(chan bool, len(rf.peers))
+				rf.mu.Lock()
+				args := &RequestVoteArgs{
+					Term:         rf.currentTerm,
+					CandidateId:  rf.me,
+					LastLogIndex: len(rf.logs) - 1,
+					LastLogTerm: func() int {
+						if len(rf.logs)-1 < 0 {
+							return -1
+						} else {
+							return rf.logs[len(rf.logs)-1].Term
+						}
+					}(),
+				}
+				rf.mu.Unlock()
+
+				//DPrintf("%d start to request the vote\n",rf.me)
+				for index, _ := range rf.peers {
+					if index != rf.me {
+						go func(index int) {
+							reply := &RequestVoteReply{}
+							ok := false
+							//keep Calling until get the reply or something happend
+							ok = rf.peers[index].Call("Raft.RequestVote", args, reply)
+							cond.L.Lock()
+							voteStop := stop
+							DPrintf("%d get the rpc reply from %d:%v", rf.me, index, *reply)
+							cond.L.Unlock()
+							if voteStop {
+								//DPrintf("%d vote stop\n",rf.me)
+								return //if the vote finished
+							}
+							if ok {
+								//if get the response from Call
+								//check the reply
+								if reply.VoteGranted {
+									ch <- true
+								} else {
+									ch <- false
+								}
+								rf.mu.Lock()
+								if rf.currentTerm < reply.Term {
+									//此处不需要停止投票，因为不会成功
+									rf.currentState = Follower
+									rf.currentTerm = reply.Term
+									rf.votedFor = -1
+									//rf.currentLeader=-1
+									rf.persist()
+								}
+								rf.mu.Unlock()
+							} else {
+								ch <- false
+							}
+						}(index)
+					}
+				}
+				//check the vote result,until voteNum is enough or all have voted
+				DPrintf("%d check the state\n", rf.me)
+			CHECK:
+				for {
+					select {
+					case reply := <-ch: //have a reply
+						voteNum++
+						if reply {
+							grantNum++
+						}
+						if voteNum == len(rf.peers) || grantNum > (len(rf.peers)-1)/2 {
+							//finish the vote
+							cond.L.Lock()
+							DPrintf("%d stop at case1\n", rf.me)
+							stop = true
+							cond.L.Unlock()
+
+							rf.mu.Lock()
+							if rf.currentState == Candidate {
+								if grantNum>= (len(rf.peers)+1)/2{
+									//candidate get most of the votes
+									rf.currentState = Leader
+									rf.currentLeader = rf.me
+									rf.votedFor = -1
+									for i := 0; i < len(rf.nextIndex); i++ {
+										rf.nextIndex[i] = len(rf.logs)
+										rf.matchIndex[i] = -1
+									}
+									rf.persist()
+									go LeaderAction(rf)
+								}else{
+									//candidate
+
+								}
+
+							} else {
+								rf.currentState = Follower
+								//rf.currentLeader=-1
+								//rf.votedFor=-1
+								rf.persist()
+							}
+							rf.mu.Unlock()
+							break CHECK
+						}
+						//DPrintf("%d get a reply,grantNum:%d",rf.me,grantNum)
+					case <-ctx.Done():
+						DPrintf("%d outtime when election\n", rf.me)
+						cond.L.Lock()
+						stop = true
+						cond.L.Unlock()
+						rf.mu.Lock()
+						rf.currentState = Follower
+						//rf.currentLeader=-1
+						//rf.votedFor=-1
+						rf.persist()
+						rf.mu.Unlock()
+						break CHECK
+					default:
+						rf.mu.Lock()
+						if rf.currentState != Candidate {
+							//DPrintf("get a leader\n")
+							rf.currentLeader = -1
+							rf.mu.Unlock()
+							cond.L.Lock()
+							DPrintf("%d stop at default\n", rf.me)
+							stop = true
+							cond.L.Unlock()
+							break CHECK //when a leader call the appendlogRPC,state becomes to follower,then return
+						}
+						rf.mu.Unlock()
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				rf.mu.Lock()
+				DPrintf("%d becomes %v,grantnum:%d", rf.me, rf.currentState, grantNum)
+				rf.mu.Unlock()
+			}(ctx)
 			//request for vote from other peers
+			sleepTime = rand.Int63()%200 + 300
+			time.Sleep(time.Millisecond * time.Duration(sleepTime))
+			cancelFunc()
+		} else {
+			sleepTime = rand.Int63()%200 + 300
+			time.Sleep(time.Millisecond * time.Duration(sleepTime))
 		}
 	}
 }
-
-
 
 //
 // the service or tester wants to create a Raft server. the ports
@@ -456,7 +593,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1 //-1 as nil
 	rf.currentState = Follower
 	rf.currentLeader = -1
-	rf.electionClock=rand.Int63()%200+300
 
 	rf.commitIndex = -1
 	rf.lastApplied = -1
