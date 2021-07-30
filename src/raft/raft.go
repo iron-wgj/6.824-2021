@@ -19,18 +19,16 @@ package raft
 
 import (
 	"bytes"
-	"context"
 	"log"
 	"math/rand"
-	"os/user"
 
 	//	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"6.824/labgob"
-	"6.824/labrpc"
+	"wanggj.me/myraft/labgob"
+	"wanggj.me/myraft/labrpc"
 )
 
 type raftState int
@@ -104,15 +102,15 @@ type LogEntry struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	var term int
-	var isleader bool = false
+	var isLeader = false
 	// Your code here (2A).
 	rf.mu.Lock()
 	term = rf.currentTerm
 	if rf.currentState == Leader {
-		isleader = true
+		isLeader = true
 	}
 	rf.mu.Unlock()
-	return term, isleader
+	return term, isLeader
 }
 
 //
@@ -227,25 +225,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	} else if rf.currentTerm < args.Term {
-		if func(lastIndex, lastTerm int) bool {
-			preIndex := len(rf.logs) - 1
-			preTerm := -1
-			if preIndex >= 0 {
-				preTerm = rf.logs[preIndex].Term
-			}
-			DPrintf("%d preIndex:%d,preTerm:%d,lastIndex:%d,lastTerm:%d\n", rf.me, preIndex, preTerm, lastIndex, lastTerm)
-			if lastTerm < preTerm {
-				return false
-			} else if lastTerm == preTerm {
-				if lastIndex < preIndex {
-					return false
-				} else {
-					return true
-				}
-			} else {
-				return true
-			}
-		}(args.LastLogIndex, args.LastLogTerm) {
+		if uptodate(rf,args.LastLogIndex, args.LastLogTerm) {
 			//term is bigger and up-to-date
 			rf.currentState = Follower
 			rf.votedFor = args.CandidateId
@@ -265,24 +245,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = false
 		}
 	} else {
-		if func(lastIndex, lastTerm int) bool {
-			preIndex := len(rf.logs) - 1
-			preTerm := -1
-			if preIndex >= 0 {
-				preTerm = rf.logs[preIndex].Term
-			}
-			if lastTerm < preTerm {
-				return false
-			} else if lastTerm == preTerm {
-				if lastIndex < preIndex {
-					return false
-				} else {
-					return true
-				}
-			} else {
-				return true
-			}
-		}(args.LastLogIndex, args.LastLogTerm) {
+		if uptodate(rf,args.LastLogIndex, args.LastLogTerm) {
 			//term equal but up-to-date
 			if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 				//grant the vote
@@ -302,6 +265,25 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	rf.mu.Unlock()
 	return
+}
+
+func uptodate(rf *Raft,lastIndex, lastTerm int) bool {
+	preIndex := len(rf.logs) - 1
+	preTerm := -1
+	if preIndex >= 0 {
+		preTerm = rf.logs[preIndex].Term
+	}
+	if lastTerm < preTerm {
+		return false
+	} else if lastTerm == preTerm {
+		if lastIndex < preIndex {
+			return false
+		} else {
+			return true
+		}
+	} else {
+		return true
+	}
 }
 
 //
@@ -402,30 +384,31 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+		//注意：决定发起投票和更改状态是原子操作，否则在发起投票后被改为follower然后发起投票会导致错误。
 		rf.mu.Lock()
 		duration := time.Now().Sub(rf.lastHeartbeat)
-		curState := rf.currentState
-		rf.mu.Unlock()
 
 		//follower action: check if election clock time out
-		//term increse,state become to candiate and vote for self
-		if curState == Follower{
-			if int64(duration.Milliseconds()) >= rf.electionClock {
-				rf.mu.Lock()
+		//term increase,state become to candidate and vote for self
+		//candidate action: start the vote request and check, stop when timeout
+		//leader action:sleep electionTime
+		if rf.currentState == Follower{
+			if duration.Milliseconds() >= rf.electionClock {
 				rf.currentState = Candidate
-				rf.mu.Unlock()
+				DPrintf("%d start the election from follower,currentTerm:%d",rf.me,rf.currentTerm)
 				CandidateVote(rf)
 			}else{
+				rf.mu.Unlock()
 				time.Sleep(time.Millisecond * time.Duration(100))
 			}
-		}
-
-		//candidate action: start the vote request and check, stop when timeout
-		if curState==Candidate {
+		}else if rf.currentState==Candidate {
 			//DPrintf("%d start the vote,duration:%d,sleeptime:%d\n",rf.me,int64(duration.Milliseconds()),sleepTime)
 			//start the goroutine which start the vote
+			DPrintf("%d start the election from candidate,currentTerm:%d",rf.me,rf.currentTerm)
 			CandidateVote(rf)
-			//request for vote from other peers
+		}else{
+			rf.mu.Unlock()
+			time.Sleep(time.Duration(rf.electionClock)*time.Millisecond)
 		}
 	}
 }

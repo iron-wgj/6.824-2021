@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"6.824/labrpc"
+	"wanggj.me/myraft/labrpc"
 	"time"
 )
 
@@ -51,26 +51,17 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 		if !args.Heartbeat {
 			//not a heartbeat
 			//DPrintf("%d get a appendentries,term:%d,my term:%d,heartbeat:%v,leadercommitIndex:%d,commitindex:%d,logs:%v\n", rf.me,args.Term,rf.currentTerm,args.Heartbeat,args.LeaderCommit,rf.commitIndex,args.Entries)
-			if func(prevIndex int, pervTerm int) bool {
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-				if prevIndex >= len(rf.logs) {
-					return false
-					//DPrintf("%d append entry %d fail:pre entry loss\n",rf.me,prevIndex+1)
-				} else if prevIndex < 0 {
-					//from the begining
-					return true
-				} else {
-					if rf.logs[prevIndex].Term != pervTerm {
-						//preTerm not match
-						//DPrintf("%d append entry %d fail:term not match\n",rf.me,prevIndex+1)
-						return false
-					}
-				}
-				return true
-			}(args.PrevLogIndex, args.PrevLogTerm) {
+			if match(rf,args.PrevLogIndex, args.PrevLogTerm) {
 				// match the prevlogentry
 				rf.mu.Lock()
+				DPrintf("%d get new logs, index:%d,term:%d,mylenght:%d,match log:%v",rf.me,args.PrevLogIndex,args.PrevLogTerm, len(rf.logs),
+					func()LogEntry{
+						if args.PrevLogIndex< len(rf.logs)&&args.PrevLogIndex>=0{
+							return rf.logs[args.PrevLogIndex]
+						}else{
+							return LogEntry{}
+						}
+					}())
 				if args.PrevLogIndex < 0 {
 					rf.logs = args.Entries
 				} else {
@@ -93,23 +84,32 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 				//DPrintf("%d get a log,now log length:%d\n",rf.me,len(rf.logs))
 			} else {
 				rf.mu.Lock()
-				if args.PrevLogIndex >= len(rf.logs) {
-					reply.ConflictMinIndex = len(rf.logs)
-					reply.ConflictTerm = -1
-				} else {
-					minIndex := args.PrevLogIndex
-					term := rf.logs[minIndex].Term
-					for minIndex > 0 {
-						if rf.logs[minIndex-1].Term == term {
+				if len(rf.logs)==0{
+					//logs为空
+					reply.ConflictMinIndex=-1
+					reply.ConflictTerm=-1
+				}else{
+					if args.PrevLogIndex>=len(rf.logs){
+						//find the begin of last term
+						minIndex:= len(rf.logs)-1
+						term:=rf.logs[minIndex].Term
+						reply.ConflictTerm=term
+						reply.ConflictMinIndex=findTermBegin(rf,minIndex,term)
+					}else{
+						//find the begin of this term
+						minIndex := args.PrevLogIndex
+						term := rf.logs[minIndex].Term
+						//find the begin of last one of this term
+						minIndex=findTermBegin(rf,minIndex,term)
+						if minIndex>0{
+							term=rf.logs[minIndex-1].Term
 							minIndex--
-						} else {
-							break
 						}
+						reply.ConflictTerm = term
+						reply.ConflictMinIndex = findTermBegin(rf,minIndex,term)
 					}
-					reply.ConflictTerm = term
-					reply.ConflictMinIndex = minIndex
 				}
-				DPrintf("%d logs:%v\n", rf.me, rf.logs)
+				//DPrintf("%d logs:%v\n", rf.me, rf.logs)
 				reply.Term = rf.currentTerm
 				rf.mu.Unlock()
 				reply.Success = false
@@ -129,12 +129,44 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 			}
 			reply.Term = rf.currentTerm
 			rf.mu.Unlock()
-
 			reply.Success = true
 		}
 
 	}
 	return
+}
+
+func findTermBegin(rf *Raft,minIndex,term int)(int){
+	if minIndex<=0{
+		return -1
+	}else{
+		for minIndex>0{
+			if rf.logs[minIndex-1].Term==term{
+				minIndex--
+			}else{
+				break
+			}
+		}
+		return minIndex
+	}
+}
+
+//judge if logs match
+func match(rf *Raft,prevIndex,prevTerm int)bool{
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if prevIndex >= len(rf.logs) {
+		return false
+		//DPrintf("%d append entry %d fail:pre entry loss\n",rf.me,prevIndex+1)
+	} else if prevIndex < 0 {
+		//from the begining
+		return true
+	} else if rf.logs[prevIndex].Term != prevTerm{
+		//preTerm not match
+		//DPrintf("%d append entry %d fail:term not match\n",rf.me,prevIndex+1)
+		return false
+	}
+	return true
 }
 
 //HeartBeat function leader used for informe the followers to restart the election timers
@@ -170,6 +202,30 @@ func (rf *Raft) HeartBeat(server int) {
 		return
 	} else {
 		return
+	}
+}
+
+/*
+Get correct commitIndex for server index.
+
+if doesn't commit logs with newest term, return rf.mathcIndex[index]
+
+else return smaller one between rf.commitIndex and rf.mathcIndex[index]
+*/
+func CorrectCommitIndex(rf *Raft,index int)int{
+	if rf.commitIndex<0{
+		return -1
+	}
+	if rf.logs[rf.commitIndex].Term!=rf.currentTerm{
+		return rf.matchIndex[index]
+	}else{
+		return func(a,b int)int{
+			if a<b{
+				return a
+			}else{
+				return b
+			}
+		}(rf.commitIndex,rf.matchIndex[index])
 	}
 }
 
@@ -281,6 +337,7 @@ func LeaderAction(rf *Raft) {
 									//outdate
 									rf.currentTerm = reply.Term
 									rf.currentState = Follower
+									rf.lastHeartbeat=time.Now()
 									rf.votedFor = -1
 									rf.persist()
 									//5.8 22:43 if outdate, return
@@ -314,14 +371,13 @@ func LeaderAction(rf *Raft) {
 								rf.mu.Unlock()
 							}
 						} else {
-							//if RPC failed, sleep for ten ms and retry
+							//if RPC failed, sleep for 10 ms and retry
 							time.Sleep(10 * time.Millisecond)
 						}
 					} else {
 						time.Sleep(10 * time.Millisecond)
 					}
 				}
-				DPrintf("log ")
 			}(index, peer)
 		}
 	}
@@ -338,7 +394,7 @@ func LeaderAction(rf *Raft) {
 			}
 		} else {
 			rf.mu.Unlock()
-			break
+			return
 		}
 		time.Sleep(150 * time.Millisecond)
 	}

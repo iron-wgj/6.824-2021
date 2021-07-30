@@ -8,8 +8,8 @@ package raft
 // test with the original before submitting.
 //
 
-import "6.824/labgob"
-import "6.824/labrpc"
+import "wanggj.me/myraft/labgob"
+import "wanggj.me/myraft/labrpc"
 import "bytes"
 import "log"
 import "sync"
@@ -531,6 +531,8 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 					if cmd1 == cmd {
 						// and it was the command we submitted.
 						return index
+					}else{
+						DPrintf("commit error cmd:%d",index)
 					}
 				}
 				//DPrintf("one(%d) check,index(%d):nd %d,cmd1:%d\n",cmd,index,nd,cmd1)

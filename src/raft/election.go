@@ -4,6 +4,9 @@ import (
 	"context"
 	"math/rand"
 	"time"
+
+	//"wanggj.me/myraft/labrpc"
+	//"wanggj.me/myraft/labgob"
 )
 
 //candiadate action: start the election ,until one of the three follow things happends
@@ -11,20 +14,20 @@ import (
 //2.get most of votes
 //3.out time
 func CandidateVote(rf *Raft){
+
 	//increment currentTerm,reset election Timer,vote for self
-	rf.mu.Lock()
 	rf.votedFor = rf.me
 	rf.lastHeartbeat = time.Now()
 	rf.currentTerm++
 	rf.electionClock=rand.Int63()%200+300
-	rf.mu.Unlock()
 	rf.persist()
+	rf.mu.Unlock()
+
 
 	//vote variables
-	ch := make(chan RequestVoteReply, len(rf.peers))		//ch for get all replys
 	var args *RequestVoteArgs								//vote args
 	ctx,cancelFunc:=context.WithCancel(context.Background())//close context
-
+	ch:=make(chan RequestVoteReply,len(rf.peers))
 	rf.mu.Lock()
 	args = &RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -53,6 +56,7 @@ func CandidateVote(rf *Raft){
 	//wait for timeout
 	time.Sleep(time.Duration(rf.electionClock)*time.Millisecond)
 	cancelFunc()
+	DPrintf("%d stop the election.",rf.me)
 	return
 }
 
@@ -68,27 +72,21 @@ func sendVote(rf *Raft,index int,ctx context.Context,args *RequestVoteArgs,ch ch
 
 	//set reply,if rpc failed,term=-1&voteGranted=false
 	if !ok {
-		//rf.mu.Lock()
-		//if rf.currentTerm < reply.Term {
-		//	//此处不需要停止投票，因为不会成功
-		//	rf.currentState = Follower
-		//	rf.currentTerm = reply.Term
-		//	rf.votedFor = -1
-		//	//rf.currentLeader=-1
-		//	rf.persist()
-		//}
-		//rf.mu.Unlock()
 		reply.Term=-1
 		reply.VoteGranted=false
 	}
+	DPrintf("Candidate:%d Term:%d,get vote from %d : %v",rf.me,args.Term,index,*reply)
+
 	select {
 	case <-ctx.Done():
 		// channel has closed
+		DPrintf("Close the goroutine %d:%d.",rf.me,index)
 		return
 	case ch<-*reply:
 		//if the channel not closed,send reply
 		return
 	}
+
 }
 
 
@@ -98,23 +96,30 @@ func sendVote(rf *Raft,index int,ctx context.Context,args *RequestVoteArgs,ch ch
 func receiveVote(rf *Raft,ctx context.Context,ch chan RequestVoteReply){
 	voteNum := 1			//number of replys
 	grantNum := 1			//number of votes
+	rf.mu.Lock()
+	term:=rf.currentTerm
+	rf.mu.Unlock()
 
 	for {
 		//check the vote result,until voteNum is enough or all have voted
 		select {
 		case <-ctx.Done():
+			DPrintf("%d election timeout,Term:%d",rf.me,term)
 			return
 		case reply := <-ch: //have a reply
 			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if rf.currentState==Follower{
+			if rf.currentState!=Candidate{
 				//if becomes follower,stop
+				DPrintf("%d have changed into %d",rf.me,rf.currentState)
+				rf.mu.Unlock()
 				return
 			}else if rf.currentTerm<reply.Term{
 				//Term T > currentTerm, convert to follower, stop the receiver
+				DPrintf("%d stop beacause bigger term.",rf.me)
 				rf.currentTerm=reply.Term
 				rf.currentState=Follower
 				rf.lastHeartbeat=time.Now()
+				rf.mu.Unlock()
 				return
 			}
 			voteNum++
@@ -125,22 +130,20 @@ func receiveVote(rf *Raft,ctx context.Context,ch chan RequestVoteReply){
 			//candidate get most of the votes
 				rf.currentState = Leader
 				rf.currentLeader = rf.me
+				rf.lastHeartbeat=time.Now()
 				rf.votedFor = -1
 				for i := 0; i < len(rf.nextIndex); i++ {
 					rf.nextIndex[i] = len(rf.logs)
 					rf.matchIndex[i] = -1
 				}
 				rf.persist()
+				rf.mu.Unlock()
+				//start the leader action
 				go LeaderAction(rf)
+				DPrintf("%d becomes %v,grantnum:%d", rf.me, rf.currentState, grantNum)
 				return
 			}
-			//DPrintf("%d get a reply,grantNum:%d",rf.me,grantNum)
-		case <-ctx.Done()://outtime when election
-			DPrintf("%d outtime when election\n", rf.me)
-			return
+			rf.mu.Unlock()
 		}
 	}
-	rf.mu.Lock()
-	DPrintf("%d becomes %v,grantnum:%d", rf.me, rf.currentState, grantNum)
-	rf.mu.Unlock()
 }
