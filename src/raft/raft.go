@@ -273,6 +273,7 @@ func uptodate(rf *Raft,lastIndex, lastTerm int) bool {
 	if preIndex >= 0 {
 		preTerm = rf.logs[preIndex].Term
 	}
+	DPrintf("%d preIndex=%d,preTerm=%d,lastIndex=%d,lastTerm=%d",rf.me,preIndex,preTerm,lastIndex,lastTerm)
 	if lastTerm < preTerm {
 		return false
 	} else if lastTerm == preTerm {

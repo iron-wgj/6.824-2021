@@ -54,7 +54,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 			if match(rf,args.PrevLogIndex, args.PrevLogTerm) {
 				// match the prevlogentry
 				rf.mu.Lock()
-				DPrintf("%d get new logs, index:%d,term:%d,mylenght:%d,match log:%v",rf.me,args.PrevLogIndex,args.PrevLogTerm, len(rf.logs),
+				DPrintf("%d get new logs, preindex:%d,preterm:%d,mylenght:%d,match log:%v",rf.me,args.PrevLogIndex,args.PrevLogTerm, len(rf.logs),
 					func()LogEntry{
 						if args.PrevLogIndex< len(rf.logs)&&args.PrevLogIndex>=0{
 							return rf.logs[args.PrevLogIndex]
@@ -111,6 +111,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 				}
 				//DPrintf("%d logs:%v\n", rf.me, rf.logs)
 				reply.Term = rf.currentTerm
+				rf.lastHeartbeat=time.Now()
 				rf.mu.Unlock()
 				reply.Success = false
 			}
@@ -176,13 +177,7 @@ func (rf *Raft) HeartBeat(server int) {
 		Term:      rf.currentTerm,
 		LeaderId:  rf.me,
 		Heartbeat: true,
-		LeaderCommit: func(a, b int) int {
-			if a < b {
-				return a
-			} else {
-				return b
-			}
-		}(rf.commitIndex, rf.matchIndex[server]), //leader don't commit log entries of last terms ,but the commited entries can be recommitted
+		LeaderCommit: CorrectCommitIndex(rf,server),
 	}
 	rf.mu.Unlock()
 	var reply AppendReply
@@ -213,19 +208,21 @@ if doesn't commit logs with newest term, return rf.mathcIndex[index]
 else return smaller one between rf.commitIndex and rf.mathcIndex[index]
 */
 func CorrectCommitIndex(rf *Raft,index int)int{
-	if rf.commitIndex<0{
+	 min:=func(a,b int)int{
+		if a<b{
+			return a
+		}else{
+			return b
+		}
+	 }(rf.commitIndex,rf.matchIndex[index])
+	if min<0{
 		return -1
-	}
-	if rf.logs[rf.commitIndex].Term!=rf.currentTerm{
-		return rf.matchIndex[index]
 	}else{
-		return func(a,b int)int{
-			if a<b{
-				return a
-			}else{
-				return b
-			}
-		}(rf.commitIndex,rf.matchIndex[index])
+		if rf.logs[min].Term!=rf.currentTerm{
+			return -1
+		}else{
+			return min
+		}
 	}
 }
 
@@ -283,13 +280,7 @@ func LeaderAction(rf *Raft) {
 							}(),
 							Heartbeat: false,
 							Entries:   Entries, //log entries of a whole term
-							LeaderCommit: func(a, b int) int {
-								if a < b {
-									return a
-								} else {
-									return b
-								}
-							}(rf.commitIndex, rf.matchIndex[index]),
+							LeaderCommit:CorrectCommitIndex(rf,index),
 						}
 						rf.mu.Unlock()
 						reply := AppendReply{
@@ -302,7 +293,7 @@ func LeaderAction(rf *Raft) {
 								matched = true
 								rf.mu.Lock()
 								rf.matchIndex[index] = entryEnd - 1
-								DPrintf("matchindex %d becomes to %d,now mathcindex:%v, commitIndex:%d\n", index, rf.matchIndex[index], rf.matchIndex, rf.commitIndex)
+								DPrintf("%d matchindex %d becomes to %d,now mathcindex:%v, commitIndex:%d\n",rf.me, index, rf.matchIndex[index], rf.matchIndex, rf.commitIndex)
 								n := rf.matchIndex[index]
 								if n > rf.commitIndex {
 									count := 0
@@ -339,6 +330,7 @@ func LeaderAction(rf *Raft) {
 									rf.currentState = Follower
 									rf.lastHeartbeat=time.Now()
 									rf.votedFor = -1
+									DPrintf("leader %d, term:%d, get bigger term %d from %d",rf.me,rf.currentTerm,reply.Term,index)
 									rf.persist()
 									//5.8 22:43 if outdate, return
 									rf.mu.Unlock()
