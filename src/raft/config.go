@@ -1,5 +1,21 @@
 package raft
 
+import (
+	"bytes"
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"log"
+	"math/big"
+	"math/rand"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+)
+
+package raft
+
 //
 // support for Raft tester.
 //

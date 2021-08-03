@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"log"
 	"wanggj.me/myraft/labrpc"
 	"time"
 )
@@ -54,6 +55,11 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 			if match(rf,args.PrevLogIndex, args.PrevLogTerm) {
 				// match the prevlogentry
 				rf.mu.Lock()
+				if args.PrevLogIndex<rf.commitIndex{
+					log.Fatal("server",rf.me," append logs error: preLogIndex=",args.PrevLogIndex," is smaller than commitIndex=",rf.commitIndex,"logs:",rf.logs)
+					rf.mu.Unlock()
+					return
+				}
 				DPrintf("%d get new logs, preindex:%d,preterm:%d,mylenght:%d,match log:%v",rf.me,args.PrevLogIndex,args.PrevLogTerm, len(rf.logs),
 					func()LogEntry{
 						if args.PrevLogIndex< len(rf.logs)&&args.PrevLogIndex>=0{
@@ -89,15 +95,15 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 					reply.ConflictMinIndex=-1
 					reply.ConflictTerm=-1
 				}else{
+					var minIndex int
 					if args.PrevLogIndex>=len(rf.logs){
 						//find the begin of last term
-						minIndex:= len(rf.logs)-1
+						minIndex= len(rf.logs)-1
 						term:=rf.logs[minIndex].Term
-						reply.ConflictTerm=term
-						reply.ConflictMinIndex=findTermBegin(rf,minIndex,term)
+						minIndex=findTermBegin(rf,minIndex,term)
 					}else{
 						//find the begin of this term
-						minIndex := args.PrevLogIndex
+						minIndex = args.PrevLogIndex
 						term := rf.logs[minIndex].Term
 						//find the begin of last one of this term
 						minIndex=findTermBegin(rf,minIndex,term)
@@ -105,8 +111,17 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendReply) {
 							term=rf.logs[minIndex-1].Term
 							minIndex--
 						}
-						reply.ConflictTerm = term
-						reply.ConflictMinIndex = findTermBegin(rf,minIndex,term)
+						minIndex = findTermBegin(rf,minIndex,term)
+					}
+					if minIndex<rf.commitIndex{
+						reply.ConflictMinIndex=rf.commitIndex
+					}else{
+						reply.ConflictMinIndex=minIndex
+					}
+					if reply.ConflictMinIndex<0{
+						reply.ConflictTerm=-1
+					}else{
+						reply.ConflictTerm=rf.logs[reply.ConflictMinIndex].Term
 					}
 				}
 				//DPrintf("%d logs:%v\n", rf.me, rf.logs)
@@ -337,7 +352,12 @@ func LeaderAction(rf *Raft) {
 									return
 									///////////
 								} else {
-									DPrintf("append to %d faild,reply:%v\n", index, reply)
+									DPrintf("append to %d faild,reply:%v,master term:%d;%d", index, reply,term,rf.currentTerm)
+									//判断当前goroutine是否过期
+									if term<reply.Term{
+										rf.mu.Unlock()
+										return
+									}
 									if reply.ConflictMinIndex < 0 {
 										rf.nextIndex[index] = 0
 									} else {

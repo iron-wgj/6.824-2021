@@ -139,7 +139,7 @@ def run_tests(
     # fmt: on
 ):
 
-    tests = ["Figure8Unreliable2C"]
+    tests = ["2C"]
     # tests = ["2A"]
 
     if output is None:
