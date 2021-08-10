@@ -76,11 +76,11 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	//2A:
-	currentTerm   int //current term
-	votedFor      int //candidate id that received vote in current term
+	currentTerm   int 				//current term
+	votedFor      int 				//candidate id that received vote in current term
 	currentState  raftState
 	lastHeartbeat time.Time
-	currentLeader int //current leader id
+	currentLeader int 				//current leader id
 	electionClock int64
 
 	//2B:
@@ -90,6 +90,11 @@ type Raft struct {
 	matchIndex  []int
 	logs        []LogEntry
 	ApplyCond   *sync.Cond
+	ApplyCh 	chan ApplyMsg
+
+	//2D:
+	lastIncludedIndex int			//last included index of snapshot
+	lastIncludedTerm int			//last included term of snapshot
 }
 
 //a go object describe a log entry
@@ -132,6 +137,8 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logs)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -161,34 +168,19 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var voteFor int
 	var logs []LogEntry
-	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+	var lastIncludeIndex int
+	var lastIncludeTerm int
+	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil || d.Decode(&lastIncludeIndex) != nil ||d.Decode(&lastIncludeTerm) != nil{
 		log.Fatal("can't decode persisted data into wanted format\n")
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = voteFor
 		rf.logs = logs
+		rf.lastIncludedIndex=lastIncludeIndex
+		rf.lastIncludedTerm=lastIncludeTerm
 	}
 }
 
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
 
 //
 // example RequestVote RPC arguments structure.
@@ -450,25 +442,26 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.ApplyCond = sync.NewCond(&rf.mu)
+	rf.ApplyCh=applyCh
 	// start ticker goroutine to start elections
 	DPrintf("%d start the ticker\n", me)
 	go rf.ticker()
-	go func() {
-		rf.mu.Lock()
-		for {
-			for rf.lastApplied < rf.commitIndex {
-				applyCh <- ApplyMsg{
-					Command:      rf.logs[rf.lastApplied+1].Command,
-					CommandIndex: rf.lastApplied + 2,
-					CommandValid: true,
-				}
-				rf.lastApplied++
-				//DPrintf("%d applied new logs,lastApplied:%d\n",rf.me,rf.lastApplied)
-			}
-			rf.ApplyCond.Wait()
-		}
-
-	}()
-
+	go rf.applyLogs()
 	return rf
+}
+
+func (rf * Raft)applyLogs(){
+	rf.mu.Lock()
+	for {
+		for rf.lastApplied < rf.commitIndex {
+			rf.ApplyCh <- ApplyMsg{
+				Command:      rf.logs[rf.lastApplied+1].Command,
+				CommandIndex: rf.lastApplied + 2,
+				CommandValid: true,
+			}
+			rf.lastApplied++
+			//DPrintf("%d applied new logs,lastApplied:%d\n",rf.me,rf.lastApplied)
+		}
+		rf.ApplyCond.Wait()
+	}
 }
